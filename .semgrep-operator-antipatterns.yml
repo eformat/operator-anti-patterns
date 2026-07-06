@@ -1,0 +1,210 @@
+rules:
+
+  # ── AP-1: Predicate filters don't limit cache ──────────────────────────────
+  - id: operator-ap1-predicate-false-safety
+    languages: [go]
+    severity: WARNING
+    message: >
+      AP-1: WithPredicates/WithEventFilter used on Watches() — predicates only filter
+      which events reach the reconciler, NOT what the informer caches. The informer still
+      performs a full LIST+WATCH on every object of this type cluster-wide. For occasional
+      reads, use mgr.GetAPIReader() instead. For real-time events, add a label selector in
+      ByObject cache config.
+    metadata:
+      anti_pattern: AP-1
+      severity: HIGH
+      references:
+        - https://developers.redhat.com/articles/2026/07/06/5-anti-patterns-cause-kubernetes-operator-vulnerabilities
+    patterns:
+      - pattern-either:
+          - pattern: |
+              builder.Watches($TYPE, $HANDLER, builder.WithPredicates($...PREDS))
+          - pattern: |
+              $BUILDER.Watches($TYPE, $HANDLER, builder.WithPredicates($...PREDS))
+          - pattern: |
+              builder.Watches($TYPE, $HANDLER).WithEventFilter($FILTER)
+
+  # ── AP-2: DisableFor doesn't affect Owns/Watches informers ─────────────────
+  - id: operator-ap2-owns-with-disable-for
+    languages: [go]
+    severity: WARNING
+    message: >
+      AP-2: Owns() creates a cluster-wide informer that DisableFor cannot touch. DisableFor
+      only affects client.Get()/client.List() reads. If Owns() is only for garbage collection,
+      remove it — owner references handle cleanup without informers.
+    metadata:
+      anti_pattern: AP-2
+      severity: HIGH
+      references:
+        - https://developers.redhat.com/articles/2026/07/06/5-anti-patterns-cause-kubernetes-operator-vulnerabilities
+    pattern: |
+      $BUILDER.Owns($TYPE)
+
+  - id: operator-ap2-disable-for-present
+    languages: [go]
+    severity: INFO
+    message: >
+      AP-2 context: DisableFor is configured. Verify that no type listed here also appears
+      in Owns() or Watches() — those create independent informers that DisableFor cannot touch.
+    metadata:
+      anti_pattern: AP-2
+      severity: INFO
+    pattern: |
+      DisableFor: []client.Object{ $...TYPES }
+
+  # ── AP-3: Invisible informer from client.Get() ─────────────────────────────
+  - id: operator-ap3-invisible-informer-get
+    languages: [go]
+    severity: ERROR
+    message: >
+      AP-3: client.Get() for a type not explicitly registered in ByObject or DisableFor can
+      silently create a cluster-wide informer on first call. This is the most dangerous
+      anti-pattern because it is completely invisible during code review. Add this type to
+      DisableFor to prevent implicit informer creation.
+    metadata:
+      anti_pattern: AP-3
+      severity: CRITICAL
+      references:
+        - https://developers.redhat.com/articles/2026/07/06/5-anti-patterns-cause-kubernetes-operator-vulnerabilities
+    patterns:
+      - pattern-either:
+          - pattern: |
+              var $VAR $TYPE
+              ...
+              $CLIENT.Get(ctx, $KEY, &$VAR)
+          - pattern: |
+              $VAR := &$TYPE{}
+              ...
+              $CLIENT.Get(ctx, $KEY, $VAR)
+      - pattern-not-inside: |
+          func ($R *$RECONCILER) SetupWithManager($MGR ctrl.Manager) error { ... }
+    # Note: This rule flags Get() calls — manual triage needed to check if the type
+    # is registered in ByObject or DisableFor elsewhere.
+
+  # ── AP-5: Typed/unstructured cache trap ─────────────────────────────────────
+  - id: operator-ap5-unstructured-usage
+    languages: [go]
+    severity: WARNING
+    message: >
+      AP-5: Unstructured object usage detected. controller-runtime maintains 3 separate
+      caches (typed, unstructured, metadata). If watches use typed objects but reads use
+      unstructured, they hit different caches — wasting memory or doubling it. Use
+      WatchesMetadata() if you only need triggers, or ensure watch and read use the same
+      representation.
+    metadata:
+      anti_pattern: AP-5
+      severity: HIGH
+      references:
+        - https://developers.redhat.com/articles/2026/07/06/5-anti-patterns-cause-kubernetes-operator-vulnerabilities
+    patterns:
+      - pattern-either:
+          - pattern: |
+              $U := &unstructured.Unstructured{}
+          - pattern: |
+              $U.SetGroupVersionKind($GVK)
+          - pattern: |
+              var $U unstructured.Unstructured
+
+  # ── AP-6: Unfiltered ByObject entries ──────────────────────────────────────
+  - id: operator-ap6-unfiltered-byobject
+    languages: [go]
+    severity: ERROR
+    message: >
+      AP-6: ByObject entry with empty config {} — caches ALL objects of this type cluster-wide.
+      700 objects at 900KB = 630MB, exceeding typical 512MiB limits. Any user with the edit
+      ClusterRole can trigger OOMKill. Add a label selector to this entry.
+    metadata:
+      anti_pattern: AP-6
+      severity: CRITICAL
+      references:
+        - https://developers.redhat.com/articles/2026/06/01/protect-your-kubernetes-operator-oomkill
+    patterns:
+      - pattern-either:
+          - pattern: |
+              $TYPE: {},
+          - pattern: |
+              $TYPE: cache.ByObject{},
+      - pattern-inside: |
+          ByObject: map[client.Object]cache.ByObject{ $...ENTRIES }
+
+  # ── AP-7: Operator-created resources missing cache labels ──────────────────
+  - id: operator-ap7-missing-label-on-create
+    languages: [go]
+    severity: WARNING
+    message: >
+      AP-7: ObjectMeta in resource creation without Labels — if the cache uses label selectors,
+      this resource will be invisible to the operator's own cached reads. Always apply the
+      filtering label when creating resources.
+    metadata:
+      anti_pattern: AP-7
+      severity: MEDIUM
+      references:
+        - https://developers.redhat.com/articles/2026/06/01/protect-your-kubernetes-operator-oomkill
+    pattern: |
+      ObjectMeta: metav1.ObjectMeta{
+        Name:      $NAME,
+        Namespace: $NS,
+      }
+    # Note: This catches ObjectMeta without any Labels field. May produce false positives
+    # for resources not managed through a filtered cache.
+
+  # ── AP-9: Labels not propagated during updates ─────────────────────────────
+  - id: operator-ap9-update-without-labels
+    languages: [go]
+    severity: WARNING
+    message: >
+      AP-9: Update() call found. Ensure the object's Labels map includes the required cache
+      filter label before updating. If Labels is nil or missing the filter label, the resource
+      becomes invisible to the filtered cache after the update.
+    metadata:
+      anti_pattern: AP-9
+      severity: MEDIUM
+      references:
+        - https://developers.redhat.com/articles/2026/06/01/protect-your-kubernetes-operator-oomkill
+    patterns:
+      - pattern-either:
+          - pattern: |
+              $CLIENT.Update(ctx, $OBJ)
+          - pattern: |
+              $CLIENT.Update(ctx, $OBJ, $...OPTS)
+
+  # ── AP-10: No DefaultTransform to strip managedFields ──────────────────────
+  - id: operator-ap10-no-strip-managed-fields
+    languages: [go]
+    severity: INFO
+    message: >
+      AP-10: cache.Options found without DefaultTransform: cache.TransformStripManagedFields().
+      Every cached object carries ~2-5KB of managedFields metadata that operators almost never
+      need. Add DefaultTransform to reduce memory overhead.
+    metadata:
+      anti_pattern: AP-10
+      severity: MEDIUM
+      references:
+        - https://developers.redhat.com/articles/2026/06/01/protect-your-kubernetes-operator-oomkill
+    pattern: |
+      cache.Options{
+        $...FIELDS
+      }
+    pattern-not: |
+      cache.Options{
+        $...BEFORE,
+        DefaultTransform: $TRANSFORM,
+        $...AFTER,
+      }
+
+  # ── Bonus: WatchesMetadata recommendation ──────────────────────────────────
+  - id: operator-prefer-watches-metadata
+    languages: [go]
+    severity: INFO
+    message: >
+      Consider WatchesMetadata() instead of Watches() if you only need reconciliation triggers
+      (knowing something changed) and not the full object contents. WatchesMetadata() caches only
+      ObjectMeta (~1KB per object vs up to ~900KB for full objects).
+    metadata:
+      anti_pattern: AP-5
+      severity: INFO
+    patterns:
+      - pattern: |
+          $BUILDER.Watches($TYPE, handler.EnqueueRequestsFromMapFunc($FN))
+      - pattern-not: |
+          $BUILDER.WatchesMetadata($TYPE, handler.EnqueueRequestsFromMapFunc($FN))
