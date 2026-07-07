@@ -138,6 +138,15 @@ UNIQUE_COUNT=$(wc -l < "$UNIQUE_REPOS")
 echo "  $TOTAL_ENTRIES entries → $UNIQUE_COUNT unique repos"
 
 # -- Step 3: Clone repos at exact commit --------------------------------------
+# If GH_TOKEN or GITHUB_TOKEN is set, inject it into HTTPS URLs for higher rate limits
+AUTH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+if [[ -n "$AUTH_TOKEN" ]]; then
+    echo "  Using GH_TOKEN for authenticated clones (5,000 req/hr rate limit)"
+else
+    echo "  No GH_TOKEN set — unauthenticated clones (60 req/hr rate limit)"
+    echo "  Tip: export GH_TOKEN=\$(gh auth token) to avoid rate limiting"
+fi
+
 if $SKIP_CLONE; then
     echo "[3/5] Skipping clone (--skip-clone)"
 else
@@ -154,20 +163,35 @@ else
             return 0
         fi
 
-        rm -rf "$target"
-        if git init -q "$target" && \
-           git -C "$target" remote add origin "$url" && \
-           git -C "$target" fetch --depth 1 -q origin "$sha" 2>/dev/null && \
-           git -C "$target" checkout -q FETCH_HEAD 2>/dev/null; then
-            echo "  [ok]   $repo_name"
-        else
-            echo "  [FAIL] $repo_name ($url @ $sha)" >&2
-            rm -rf "$target"
-            echo "$repo_name" >> "$OUTPUT_DIR/clone-failures.txt"
+        # Inject token into HTTPS URL if available
+        local clone_url="$url"
+        if [[ -n "$AUTH_TOKEN" ]] && [[ "$url" == https://github.com/* ]]; then
+            clone_url="https://x-access-token:${AUTH_TOKEN}@github.com/${url#https://github.com/}"
         fi
+
+        local attempt max_attempts=3
+        for attempt in $(seq 1 $max_attempts); do
+            rm -rf "$target"
+            if git init -q "$target" && \
+               git -C "$target" remote add origin "$clone_url" && \
+               git -C "$target" config core.sparseCheckout true && \
+               mkdir -p "$target/.git/info" && \
+               printf '/*\n!vendor/\n!third_party/\n' > "$target/.git/info/sparse-checkout" && \
+               git -C "$target" fetch --depth 1 -q origin "$sha" 2>/dev/null && \
+               git -C "$target" checkout -q FETCH_HEAD 2>/dev/null; then
+                echo "  [ok]   $repo_name"
+                return 0
+            fi
+            if [[ $attempt -lt $max_attempts ]]; then
+                sleep $((attempt * 3))
+            fi
+        done
+        echo "  [FAIL] $repo_name ($url @ $sha) after $max_attempts attempts" >&2
+        rm -rf "$target"
+        echo "$repo_name" >> "$OUTPUT_DIR/clone-failures.txt"
     }
     export -f clone_repo
-    export CLONES_DIR OUTPUT_DIR
+    export CLONES_DIR OUTPUT_DIR AUTH_TOKEN
 
     while IFS=$'\t' read -r components url sha; do
         echo "$components	$url	$sha"
