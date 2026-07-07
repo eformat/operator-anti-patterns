@@ -44,13 +44,12 @@ HIGH_COUNT=0
 MEDIUM_COUNT=0
 LOW_COUNT=0
 
-declare -A AP_DETECTED
-for i in $(seq 1 10); do AP_DETECTED["AP-$i"]=false; done
+for i in $(seq 1 10); do eval "AP_DETECTED_AP_$i=false"; done
 
 add_finding() {
     local id="$1" title="$2" severity="$3" confidence="$4" file="$5" line="$6" snippet="$7" desc="$8" rec="$9"
     FINDING_COUNT=$((FINDING_COUNT + 1))
-    AP_DETECTED["$id"]=true
+    eval "AP_DETECTED_${id//-/_}=true"
 
     case "$severity" in
         CRITICAL) CRITICAL_COUNT=$((CRITICAL_COUNT + 1)) ;;
@@ -596,9 +595,9 @@ print(json.dumps(result, indent=2))
   "$REPO_DIR" \
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   "$FINDING_COUNT" "$CRITICAL_COUNT" "$HIGH_COUNT" "$MEDIUM_COUNT" "$LOW_COUNT" \
-  "${AP_DETECTED[AP-1]}" "${AP_DETECTED[AP-2]}" "${AP_DETECTED[AP-3]}" "${AP_DETECTED[AP-4]}" \
-  "${AP_DETECTED[AP-5]}" "${AP_DETECTED[AP-6]}" "${AP_DETECTED[AP-7]}" "${AP_DETECTED[AP-8]}" \
-  "${AP_DETECTED[AP-9]}" "${AP_DETECTED[AP-10]}"
+  "$(eval echo "\$AP_DETECTED_AP_1")" "$(eval echo "\$AP_DETECTED_AP_2")" "$(eval echo "\$AP_DETECTED_AP_3")" "$(eval echo "\$AP_DETECTED_AP_4")" \
+  "$(eval echo "\$AP_DETECTED_AP_5")" "$(eval echo "\$AP_DETECTED_AP_6")" "$(eval echo "\$AP_DETECTED_AP_7")" "$(eval echo "\$AP_DETECTED_AP_8")" \
+  "$(eval echo "\$AP_DETECTED_AP_9")" "$(eval echo "\$AP_DETECTED_AP_10")"
 else
     echo "========================================================================"
     echo "  SUMMARY"
@@ -612,7 +611,7 @@ else
     echo "  Anti-pattern coverage:"
     for i in $(seq 1 10); do
         local_key="AP-$i"
-        if ${AP_DETECTED[$local_key]}; then
+        if eval "\${AP_DETECTED_${local_key//-/_}}"; then
             echo "    $local_key: DETECTED"
         else
             echo "    $local_key: clean"
