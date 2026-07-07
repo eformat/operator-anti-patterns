@@ -71,6 +71,34 @@ $ make scan TARGET=~/git/cluster-network-operator
 ========================================================================
 ```
 
+## Release scanning
+
+Scan **every operator** in an OpenShift release at the exact commit shipped in the release image:
+
+```bash
+# Scan all operators in OCP 4.21.21 (clones ~43 repos, runs scanner, generates HTML report)
+make scan-release OCP_VERSION=4.21.21
+
+# JSON only, no HTML
+make scan-release-json OCP_VERSION=4.21.21
+
+# Regenerate HTML from cached JSON (no re-clone or re-scan)
+make release-report OCP_VERSION=4.21.21
+```
+
+Output goes to `/tmp/ocp-operator-scan-4.21.21/`:
+- `release-scan-4.21.21.json` — aggregate JSON with all per-operator results
+- `release-scan-4.21.21.html` — self-contained HTML report with drilldown details
+
+The HTML report includes:
+- Executive summary with severity cards
+- Anti-pattern distribution heatmap across all operators
+- Sortable operator table with finding counts
+- Expandable per-operator details showing every finding with file, line, code snippet, and fix recommendation
+- Client-side filtering by severity, anti-pattern ID, and operator name
+
+The scanner deduplicates shared repos (e.g., `csi-operator` appears as 5 different components) and clones each at the exact commit SHA from the release.
+
 ## Usage
 
 ### Scan a local repo
@@ -91,6 +119,11 @@ make scan TARGET=...     # scan local repo (text)
 make scan-json TARGET=.. # scan local repo (JSON)
 make scan-semgrep        # scan with semgrep SAST rules
 make scan-repo REPO=...  # clone and scan a remote repo
+
+# Release scanning
+make scan-release        # scan all operators in OCP release (OCP_VERSION=4.21.21)
+make scan-release-json   # release scan, JSON only
+make release-report      # regenerate HTML from cached JSON
 
 # Testing
 make test                # full evaluation (15 test cases)
@@ -211,9 +244,12 @@ Mount them into the Hermes pod's skills directory.
 
 ```
 .
-├── scan-operator-antipatterns.sh     # Main scanner (ripgrep-based)
+├── scan-operator-antipatterns.sh     # Per-repo scanner (ripgrep-based)
+├── scan-release.sh                   # Release scanner (clone + scan all operators)
+├── generate-release-report.py        # HTML report generator
 ├── .semgrep-operator-antipatterns.yml # Semgrep SAST rules (10 rules)
-├── SKILL.md                          # Hermes kanban worker skill
+├── SKILL.md                          # Hermes kanban skill (per-repo)
+├── RELEASE-SCAN-SKILL.md            # Hermes kanban skill (release scan)
 ├── Makefile                          # Build, scan, test, deploy
 ├── Containerfile                     # UBI9 container image
 ├── evaluations/

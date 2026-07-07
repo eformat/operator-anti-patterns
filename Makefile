@@ -16,6 +16,11 @@ IMAGE_REPO     ?= $(IMAGE_REGISTRY)/$(USER)/operator-anti-pattern-scanner
 IMAGE_TAG      ?= latest
 IMAGE          := $(IMAGE_REPO):$(IMAGE_TAG)
 
+# Release scan
+OCP_VERSION    ?= 4.21.21
+SCAN_PARALLEL  ?= 8
+SCAN_OUTPUT    ?= /tmp/ocp-operator-scan-$(OCP_VERSION)
+
 # Hermes / OpenShift deployment
 NAMESPACE      ?= hermes
 SKILL_NAME     := operator-anti-pattern-scanner
@@ -120,6 +125,18 @@ deploy: deploy-skill ## Full deploy (alias for deploy-skill)
 
 undeploy: ## Remove skill ConfigMaps from OpenShift
 	oc delete configmap $(SKILL_NAME)-skill $(SKILL_NAME)-scripts -n $(NAMESPACE) --ignore-not-found
+
+# ── Release Scan ────────────────────────────────────────────────────
+.PHONY: scan-release scan-release-json release-report
+scan-release: ## Scan all operators in an OCP release (OCP_VERSION=4.21.21)
+	@./scan-release.sh $(OCP_VERSION) --output-dir $(SCAN_OUTPUT) --parallel $(SCAN_PARALLEL)
+
+scan-release-json: ## Release scan, JSON only — no HTML (OCP_VERSION=...)
+	@./scan-release.sh $(OCP_VERSION) --output-dir $(SCAN_OUTPUT) --parallel $(SCAN_PARALLEL) --json-only
+
+release-report: ## Regenerate HTML from existing release JSON
+	@python3 generate-release-report.py $(SCAN_OUTPUT)/release-scan-$(OCP_VERSION).json \
+		--output $(SCAN_OUTPUT)/release-scan-$(OCP_VERSION).html
 
 # ── Scan remote repos ───────────────────────────────────────────────
 .PHONY: scan-repo scan-repo-json
