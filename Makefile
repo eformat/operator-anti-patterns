@@ -138,6 +138,9 @@ release-report: ## Regenerate HTML from existing release JSON
 	@python3 generate-release-report.py $(SCAN_OUTPUT)/release-scan-$(OCP_VERSION).json \
 		--output $(SCAN_OUTPUT)/release-scan-$(OCP_VERSION).html
 
+docs-index: ## Regenerate docs/index.html from scan reports in docs/
+	@python3 generate-docs-index.py docs/
+
 # ── Scan remote repos ───────────────────────────────────────────────
 .PHONY: scan-repo scan-repo-json
 scan-repo: ## Clone and scan a remote repo (REPO=https://...)
