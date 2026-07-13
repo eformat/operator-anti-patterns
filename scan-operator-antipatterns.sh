@@ -97,7 +97,7 @@ print(json.dumps({
 
 # -- Helpers -----------------------------------------------------------------
 # Directories to skip: vendored deps, generated code, test fixtures
-RG_EXCLUDE=(--glob '!vendor/' --glob '!third_party/' --glob '!hack/' --glob '!_output/')
+RG_EXCLUDE=(--glob '!vendor/' --glob '!third_party/' --glob '!hack/' --glob '!_output/' --glob '!testdata/' --glob '!test/fixtures/')
 
 # Run rg on Go files, excluding vendor/tests. Args: pattern, extra rg flags...
 rg_go() {
@@ -138,7 +138,31 @@ scan_ap1() {
         if echo "$snippet" | grep -qE '^\s*func |^\s*type '; then continue; fi
 
         if rg -q 'Watches\(' "$file" 2>/dev/null; then
-            if true; then
+            # Extract the type from the Watches() call closest to this predicate
+            local watches_type
+            watches_type=$(rg 'Watches\(\s*&(\w+\.\w+)\{\}' "$file" -o --replace '&$1{}' 2>/dev/null | head -1 || true)
+
+            # Check if this type already has a label selector in ByObject (not a bare {})
+            local already_filtered=false
+            if [[ -n "$watches_type" ]]; then
+                local escaped_wtype
+                escaped_wtype=$(echo "$watches_type" | sed 's/[.{}&]/\\&/g')
+                # Look for this type in ByObject with a non-empty config (Label/Field/Transform)
+                local bo_files_check
+                bo_files_check=$(rg_go 'ByObject' --glob '!*_test.go' -l)
+                if [[ -n "$bo_files_check" ]]; then
+                    while IFS= read -r bf; do
+                        local bo_content
+                        bo_content=$(rg -A5 "${escaped_wtype}" "$bf" 2>/dev/null || true)
+                        if echo "$bo_content" | rg -q 'Label:|Field:|Transform:' 2>/dev/null; then
+                            already_filtered=true
+                            break
+                        fi
+                    done <<< "$bo_files_check"
+                fi
+            fi
+
+            if ! $already_filtered; then
                 add_finding "AP-1" \
                     "Predicate filters don't limit cache" \
                     "HIGH" "HIGH" "$file" "$line" \
@@ -278,7 +302,10 @@ scan_ap3() {
         [[ -z "$var_type" ]] && continue
 
         local type_ref="&${var_type}{}"
-        if ! echo "$all_registered_types" | grep -qF "$type_ref" 2>/dev/null; then
+        # FooList and Foo share the same informer in controller-runtime
+        local type_ref_nolist=$(echo "$type_ref" | sed 's/List{}/{/')
+        if ! echo "$all_registered_types" | grep -qF "$type_ref" 2>/dev/null && \
+           ! echo "$all_registered_types" | grep -qF "$type_ref_nolist" 2>/dev/null; then
             local snippet
             snippet=$(echo "$match" | cut -d: -f3-)
             add_finding "AP-3" \
@@ -349,6 +376,12 @@ scan_ap6() {
     byobject_blocks=$(rg_go 'ByObject' --glob '!*_test.go' -l)
     if [[ -z "$byobject_blocks" ]]; then return; fi
 
+    # Collect types registered via For()/Owns() — these are the operator's own CRDs
+    # and should not be flagged as "unfiltered" (operators must watch all instances).
+    # Normalize to bare type name (e.g. "SparkApplication") to handle import alias variations.
+    local for_types_bare
+    for_types_bare=$(rg_go 'For\(\s*&\w' --glob '!*_test.go' | rg '&\w+\.(\w+)\{\}' -o --replace '$1' 2>/dev/null | sort -u || true)
+
     while IFS= read -r file; do
         local matches
         matches=$(rg --line-number --no-heading '&\w+v\d*\.\w+\{\}:\s*\{\}' "$file" 2>/dev/null || true)
@@ -364,6 +397,18 @@ scan_ap6() {
             local line snippet
             line=$(echo "$match" | cut -d: -f1)
             snippet=$(echo "$match" | cut -d: -f2-)
+
+            # Extract the type from the ByObject entry
+            local bo_type
+            bo_type=$(echo "$snippet" | rg '&\w+\.\w+\{\}' -o 2>/dev/null | head -1 || true)
+
+            # Skip types registered via For() — the operator's primary CRD
+            # Compare bare type names to handle import alias differences (v1beta2 vs v2apiv1beta2)
+            local bo_bare_type
+            bo_bare_type=$(echo "$bo_type" | rg '&\w+\.(\w+)\{\}' -o --replace '$1' 2>/dev/null || true)
+            if [[ -n "$bo_bare_type" ]] && echo "$for_types_bare" | grep -qF "$bo_bare_type" 2>/dev/null; then
+                continue
+            fi
 
             add_finding "AP-6" \
                 "Unfiltered ByObject entry" \
@@ -424,11 +469,11 @@ scan_ap8() {
     if [[ -z "$byobject_with_labels" ]]; then return; fi
 
     local create_calls
-    create_calls=$(rg_go_code '\.(Client\.)?Create\(ctx' --glob '!*_test.go' -l)
+    create_calls=$(rg_go_code '\.(Client\.)?Create\(ctx' --glob '!*_test.go' --glob '!*fixture*' --glob '!*fake*' --glob '!*mock*' -l)
     if [[ -z "$create_calls" ]]; then return; fi
 
     while IFS= read -r file; do
-        if ! rg -q 'IsAlreadyExists|errors\.IsAlreadyExists' "$file" 2>/dev/null; then
+        if ! rg -q 'IsAlreadyExists|errors\.IsAlreadyExists|IgnoreAlreadyExists' "$file" 2>/dev/null; then
             if ! rg -q 'MergeFrom|StrategicMerge' "$file" 2>/dev/null; then
                 local match
                 match=$(rg --line-number 'Create\(ctx' "$file" 2>/dev/null | head -1)
