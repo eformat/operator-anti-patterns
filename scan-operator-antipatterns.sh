@@ -141,23 +141,24 @@ scan_ap1() {
             local watches_type
             watches_type=$(rg 'Watches\(\s*&(\w+\.\w+)\{\}' "$file" -o --replace '&$1{}' 2>/dev/null | head -1 || true)
 
-            # Check if this type already has a label selector in ByObject (not a bare {})
+            # Check if this type already has a label/field selector in its own ByObject entry
+            # Only check the same file where the Watches()+WithPredicates was found
             local already_filtered=false
             if [[ -n "$watches_type" ]]; then
                 local escaped_wtype
                 escaped_wtype=$(echo "$watches_type" | sed 's/[.{}&]/\\&/g')
-                # Look for this type in ByObject with a non-empty config (Label/Field/Transform)
-                local bo_files_check
-                bo_files_check=$(rg_go 'ByObject' --glob '!*_test.go' -l)
-                if [[ -n "$bo_files_check" ]]; then
-                    while IFS= read -r bf; do
-                        local bo_content
-                        bo_content=$(rg -A5 "${escaped_wtype}" "$bf" 2>/dev/null || true)
-                        if echo "$bo_content" | rg -q 'Label:|Field:|Transform:' 2>/dev/null; then
+                if rg -q 'ByObject' "$file" 2>/dev/null; then
+                    local type_line
+                    type_line=$(rg --line-number "${escaped_wtype}" "$file" 2>/dev/null | \
+                        grep -v 'Watches\|Owns\|For(' | head -1 | cut -d: -f1)
+                    if [[ -n "$type_line" ]]; then
+                        local entry_block
+                        entry_block=$(sed -n "${type_line},$((type_line + 20))p" "$file" 2>/dev/null | \
+                            sed '2,${/&\w\+\.\w\+{}/q; /^\s*},\?\s*$/q}')
+                        if echo "$entry_block" | rg -q 'Label:|Field:|Transform:' 2>/dev/null; then
                             already_filtered=true
-                            break
                         fi
-                    done <<< "$bo_files_check"
+                    fi
                 fi
             fi
 
